@@ -1,0 +1,11 @@
+diffusers==0.32.2
+transformers>=4.47.2,<4.52.0
+huggingface-hub>=0.30,<0.31
+sentencepiece>=0.1.96
+einops
+timm
+imageio[ffmpeg]
+av
+pyyaml
+safetensors
+accelerate

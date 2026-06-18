@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ltx-music-video"
+version = "0.1.0"
+description = "Build music videos from still images with Gemma 4 and LTX-Video on Colab."
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.26", "Pillow>=10", "playwright>=1.52"]
+
+[project.scripts]
+ltx-music-video = "ltx_music_video.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["ltx_music_video*"]

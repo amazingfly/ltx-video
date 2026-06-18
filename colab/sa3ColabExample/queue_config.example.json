@@ -1,0 +1,31 @@
+{
+  "queue_version": 1,
+  "items": [
+    {
+      "model": {
+        "name": "medium"
+      },
+      "generation": {
+        "prompt": "Instrumental cybermetal, industrial drums, distorted bass, fast analog arpeggios, polished coherent mix",
+        "duration_seconds": 10,
+        "steps": 1,
+        "cfg_scale": 1.0,
+        "seed": 607101
+      },
+      "track_id": "queue-smoke-cybermetal"
+    },
+    {
+      "model": {
+        "name": "medium"
+      },
+      "generation": {
+        "prompt": "Instrumental dark futurepop, driving electronic drums, melodic synthesizers, cinematic neon atmosphere",
+        "duration_seconds": 10,
+        "steps": 1,
+        "cfg_scale": 1.0,
+        "seed": 607102
+      },
+      "track_id": "queue-smoke-futurepop"
+    }
+  ]
+}
