@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import shutil
 import subprocess
 from io import BytesIO
@@ -148,6 +149,33 @@ def video_is_valid(path: Path, minimum_duration: float = 0.5) -> bool:
         duration = float(probe.get("format", {}).get("duration", 0))
         return has_video and duration >= minimum_duration
     except (OSError, ValueError, subprocess.SubprocessError, json.JSONDecodeError):
+        return False
+
+
+def video_decodes_cleanly(path: Path, minimum_duration: float = 0.5) -> bool:
+    if not video_is_valid(path, minimum_duration=minimum_duration):
+        return False
+    try:
+        subprocess.run(
+            [
+                require_program("ffmpeg"),
+                "-v",
+                "error",
+                "-xerror",
+                "-i",
+                str(path),
+                "-map",
+                "0:v:0",
+                "-an",
+                "-f",
+                "null",
+                "-",
+            ],
+            check=True,
+            capture_output=True,
+        )
+        return True
+    except (OSError, subprocess.SubprocessError):
         return False
 
 
@@ -328,7 +356,7 @@ def normalize_clip(
     fps: int,
 ) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(f".{destination.name}.partial.mp4")
+    temporary = destination.with_name(f".{destination.name}.{os.getpid()}.partial.mp4")
     temporary.unlink(missing_ok=True)
     filter_graph = (
         f"fps={fps},"
@@ -382,7 +410,7 @@ def assemble_video(
         "".join(f"file '{_ffconcat_escape(path.resolve())}'\n" for path in clips),
         encoding="utf-8",
     )
-    temporary = output.with_name(f".{output.name}.partial.mp4")
+    temporary = output.with_name(f".{output.name}.{os.getpid()}.partial.mp4")
     temporary.unlink(missing_ok=True)
     subprocess.run(
         [
@@ -417,6 +445,13 @@ def assemble_video(
         ],
         check=True,
     )
+    minimum_output_duration = max(0.5, audio_duration - 0.5)
+    if not video_decodes_cleanly(
+        temporary,
+        minimum_duration=minimum_output_duration,
+    ):
+        temporary.unlink(missing_ok=True)
+        raise RuntimeError(f"Assembled video failed decode validation: {temporary}")
     temporary.replace(output)
 
 
@@ -490,7 +525,7 @@ def assemble_video_with_transitions(
     )
     filter_path.write_text(";\n".join(filter_lines) + "\n", encoding="utf-8")
 
-    temporary = output.with_name(f".{output.name}.partial.mp4")
+    temporary = output.with_name(f".{output.name}.{os.getpid()}.partial.mp4")
     temporary.unlink(missing_ok=True)
     command = [require_program("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y"]
     for clip in clips:
@@ -527,6 +562,13 @@ def assemble_video_with_transitions(
         ]
     )
     subprocess.run(command, check=True)
+    minimum_output_duration = max(0.5, audio_duration - 0.5)
+    if not video_decodes_cleanly(
+        temporary,
+        minimum_duration=minimum_output_duration,
+    ):
+        temporary.unlink(missing_ok=True)
+        raise RuntimeError(f"Transition video failed decode validation: {temporary}")
     temporary.replace(output)
 
 

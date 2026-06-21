@@ -4,6 +4,7 @@ import random
 import subprocess
 import tempfile
 import unittest
+import importlib.util
 from pathlib import Path
 
 import numpy as np
@@ -31,6 +32,15 @@ from ltx_music_video.media import (
     resolve_transition_output_fps,
     video_has_motion,
 )
+
+TOKEN_CYCLE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "colab_token_cycle.py"
+TOKEN_CYCLE_SPEC = importlib.util.spec_from_file_location(
+    "colab_token_cycle",
+    TOKEN_CYCLE_PATH,
+)
+assert TOKEN_CYCLE_SPEC and TOKEN_CYCLE_SPEC.loader
+TOKEN_CYCLE = importlib.util.module_from_spec(TOKEN_CYCLE_SPEC)
+TOKEN_CYCLE_SPEC.loader.exec_module(TOKEN_CYCLE)
 
 
 class PipelineTests(unittest.TestCase):
@@ -143,6 +153,12 @@ class PipelineTests(unittest.TestCase):
         validate_motion_prompt(
             "The woman's hair blows in the wind as neon lights flare behind her "
             "and thin fog curls around her boots."
+        )
+
+    def test_contained_dance_prompt_is_accepted(self) -> None:
+        validate_motion_prompt(
+            "The dancer sways her hips in place as hair and skirt fabric whip "
+            "while neon lights flare behind her."
         )
 
     def test_camera_motion_prompt_is_rejected(self) -> None:
@@ -309,6 +325,25 @@ class PipelineTests(unittest.TestCase):
                 check=True,
             )
             self.assertTrue(video_has_motion(video))
+
+    def test_colab_token_cycles_to_next_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "token.json").write_text("A", encoding="utf-8")
+            (root / "t.json").write_text("B", encoding="utf-8")
+            (root / "token.third.json").write_text("C", encoding="utf-8")
+
+            next_token = TOKEN_CYCLE.cycle_token(root)
+            self.assertEqual(next_token.name, "t.json")
+            self.assertEqual((root / "token.json").read_text(encoding="utf-8"), "B")
+
+            next_token = TOKEN_CYCLE.cycle_token(root)
+            self.assertEqual(next_token.name, "token.third.json")
+            self.assertEqual((root / "token.json").read_text(encoding="utf-8"), "C")
+
+            next_token = TOKEN_CYCLE.cycle_token(root)
+            self.assertEqual(next_token.name, "t.json")
+            self.assertEqual((root / "token.json").read_text(encoding="utf-8"), "B")
 
 
 if __name__ == "__main__":

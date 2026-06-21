@@ -10,6 +10,7 @@ LOCAL_PROMPT_CACHE="${LTX_PROMPT_CACHE:?LTX_PROMPT_CACHE must be set}"
 GENERATE_TIMEOUT="${LTX_GENERATE_TIMEOUT:-43200}"
 GUARDIAN_START_TIMEOUT="${LTX_GUARDIAN_START_TIMEOUT:-60}"
 GUARDIAN_STALE_AFTER="${LTX_GUARDIAN_STALE_AFTER:-75}"
+PROGRESS_STALE_AFTER="${LTX_PROGRESS_STALE_AFTER:-1200}"
 TUNNEL_KEEPALIVE_INTERVAL="${COLAB_TUNNEL_KEEPALIVE_INTERVAL:-45}"
 TUNNEL_KEEPALIVE_TIMEOUT="${COLAB_TUNNEL_KEEPALIVE_TIMEOUT:-10}"
 FRONTEND_KEEPALIVE_START_TIMEOUT="${COLAB_FRONTEND_KEEPALIVE_START_TIMEOUT:-60}"
@@ -289,6 +290,7 @@ PY
       mv "${temporary}" "${LOCAL_OUTPUT_DIR}/${output}"
       mv "${report_temporary}" "${LOCAL_OUTPUT_DIR}/${report}"
       echo "Downloaded completed clip: ${output}"
+      downloaded_any=1
     else
       rm -f "${temporary}" "${report_temporary}"
     fi
@@ -345,7 +347,7 @@ else
   done
   if [[ "${session_ready}" -ne 1 ]]; then
     echo "Could not allocate a Colab ${GPU} runtime." >&2
-    exit 1
+    exit 75
   fi
 fi
 session_created=1
@@ -418,8 +420,10 @@ run_exec_with_retries 300s \
   -f "${ROOT}/colab/setup_colab.py" --timeout 270
 
 console_offset=0
+console_progress=0
 sync_generation_console() {
   local temporary size
+  console_progress=0
   temporary="${LOCAL_OUTPUT_DIR}/.generation_console.log.partial"
   rm -f "${temporary}"
   if ! timeout 60s colab download -s "${SESSION}" \
@@ -432,6 +436,7 @@ sync_generation_console() {
   if (( size > console_offset )); then
     tail -c "+$((console_offset + 1))" "${temporary}"
     console_offset="${size}"
+    console_progress=1
   fi
   mv "${temporary}" "${LOCAL_OUTPUT_DIR}/generation_console.log"
 }
@@ -481,12 +486,20 @@ start_frontend_keepalive
 
 generation_return_code=""
 started_at="$(date +%s)"
+last_progress_at="${started_at}"
 while [[ -z "${generation_return_code}" ]]; do
   sleep 15
   send_tunnel_keepalive || true
   sync_generation_console
+  if [[ "${console_progress}" -eq 1 ]]; then
+    last_progress_at="$(date +%s)"
+  fi
   download_prompt_cache
+  downloaded_any=0
   download_completed
+  if [[ "${downloaded_any}" -eq 1 ]]; then
+    last_progress_at="$(date +%s)"
+  fi
 
   exit_temporary="${LOCAL_OUTPUT_DIR}/.generation_exit.json.partial"
   rm -f "${exit_temporary}"
@@ -517,6 +530,12 @@ while [[ -z "${generation_return_code}" ]]; do
   if (( $(date +%s) - started_at > GENERATE_TIMEOUT )); then
     echo "LTX generation exceeded ${GENERATE_TIMEOUT} seconds." >&2
     exit 124
+  fi
+  if (( $(date +%s) - last_progress_at > PROGRESS_STALE_AFTER )); then
+    echo \
+      "LTX generation made no console or clip progress for " \
+      "${PROGRESS_STALE_AFTER} seconds; restarting this Colab attempt." >&2
+    exit 76
   fi
   echo "Colab detached-worker heartbeat: guardian and artifact sync active"
 done

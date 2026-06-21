@@ -16,6 +16,7 @@ OUTPUTS = Path("/content/outputs")
 WORKER = ROOT / "colab" / "run_generate.py"
 LAUNCHER = ROOT / "colab" / "launch_generate.py"
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+os.environ.setdefault("LTX_CPU_VAE_FALLBACK", "1")
 
 
 def worker_main() -> int:

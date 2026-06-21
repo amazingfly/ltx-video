@@ -27,7 +27,7 @@ from .media import (
     required_clip_count,
     required_crossfade_clip_count,
     resolve_transition_output_fps,
-    video_is_valid,
+    video_decodes_cleanly,
 )
 
 
@@ -37,7 +37,7 @@ DEFAULT_MUSIC_DIR = Path("/home/derek/projects/agentic/sa3/musicLibrary/ogg/yes"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_GEMMA_START = PROJECT_ROOT / "scripts" / "start_gemma_vision.sh"
 DEFAULT_GEMMA_STOP = PROJECT_ROOT / "scripts" / "stop_gemma_vision.sh"
-MOTION_PROMPT_CONTRACT_VERSION = 3
+MOTION_PROMPT_CONTRACT_VERSION = 4
 DEFAULT_TRANSITIONS = (
     "fade",
     "dissolve",
@@ -438,7 +438,7 @@ def run_assemble(args: argparse.Namespace, manifest_path: Path | None = None) ->
             )
         destination = normalized_dir / source.name
         if (
-            not video_is_valid(destination, minimum_duration=clip_seconds - 0.1)
+            not video_decodes_cleanly(destination, minimum_duration=clip_seconds - 0.1)
             or destination.stat().st_mtime < source.stat().st_mtime
         ):
             print(f"Normalizing {source.name}")
@@ -511,7 +511,10 @@ def run_transition_assemble(args: argparse.Namespace) -> Path:
             )
         destination = normalized_dir / source.name
         if (
-            not video_is_valid(destination, minimum_duration=source_clip_seconds - 0.1)
+            not video_decodes_cleanly(
+                destination,
+                minimum_duration=source_clip_seconds - 0.1,
+            )
             or destination.stat().st_mtime < source.stat().st_mtime
         ):
             print(f"Normalizing {source.name}")

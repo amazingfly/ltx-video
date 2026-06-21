@@ -113,12 +113,18 @@ async def keep_alive(
     database: Path,
     ready_file: Path | None,
     authuser: int,
+    fallback_authusers: list[int],
 ) -> None:
     cookies = read_google_cookies(database)
     if not cookies:
         raise RuntimeError(f"No Google cookies found in {database}")
     if not CHROMIUM.exists():
         raise FileNotFoundError(f"Chromium was not found at {CHROMIUM}")
+
+    authuser_candidates = []
+    for candidate in [authuser, *fallback_authusers]:
+        if candidate not in authuser_candidates:
+            authuser_candidates.append(candidate)
 
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(
@@ -129,21 +135,43 @@ async def keep_alive(
         context = await browser.new_context()
         await context.add_cookies(cookies)
         page = await context.new_page()
-        await page.goto(
-            select_google_account(url, authuser),
-            wait_until="domcontentloaded",
-            timeout=120_000,
-        )
-        await page.wait_for_timeout(10_000)
+        last_error: Exception | None = None
+        connected_authuser: int | None = None
+        state: str | None = None
+        for candidate in authuser_candidates:
+            try:
+                await page.goto(
+                    select_google_account(url, candidate),
+                    wait_until="domcontentloaded",
+                    timeout=120_000,
+                )
+                await page.wait_for_timeout(10_000)
 
-        body = await page.locator("body").inner_text()
-        if "Sign in" in body:
+                body = await page.locator("body").inner_text()
+                if "Sign in" in body:
+                    raise RuntimeError(
+                        f"Firefox is not signed into Google account index {candidate}"
+                    )
+                state = await wait_until_connected(page)
+                connected_authuser = candidate
+                break
+            except Exception as exc:
+                last_error = exc
+                print(
+                    f"Colab frontend keepalive could not use authuser={candidate}: {exc}",
+                    flush=True,
+                )
+
+        if connected_authuser is None:
             raise RuntimeError(
-                f"Firefox is not signed into Google account index {authuser}"
-            )
-        state = await wait_until_connected(page)
+                "Colab frontend keepalive could not connect with any browser "
+                f"account index {authuser_candidates}"
+            ) from last_error
+
         report = {
-            "authuser": authuser,
+            "authuser": connected_authuser,
+            "requested_authuser": authuser,
+            "tried_authusers": authuser_candidates,
             "cookie_database": str(database),
             "page_title": await page.title(),
             "connect_state": state,
@@ -177,13 +205,31 @@ def parse_args() -> argparse.Namespace:
         default=1,
         help="Google browser account index matching the Colab CLI login",
     )
+    parser.add_argument(
+        "--fallback-authusers",
+        default="0,1,2,3",
+        help="Comma-separated browser account indices to try if --authuser is not signed in",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     database = args.cookie_db or find_cookie_database()
-    asyncio.run(keep_alive(args.url, database, args.ready_file, args.authuser))
+    fallback_authusers = [
+        int(value)
+        for value in args.fallback_authusers.split(",")
+        if value.strip()
+    ]
+    asyncio.run(
+        keep_alive(
+            args.url,
+            database,
+            args.ready_file,
+            args.authuser,
+            fallback_authusers,
+        )
+    )
 
 
 if __name__ == "__main__":

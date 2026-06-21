@@ -39,6 +39,29 @@ Run everything:
 ltx-music-video all
 ```
 
+For the production workflow with retries, separate error logging, standard
+assembly, and the interpolated transition assembly:
+
+```bash
+./scripts/run_full_pipeline.sh
+```
+
+The wrapper calls `scripts/run_full_pipeline.py` and writes `pipeline.log` plus
+`pipeline_errors.log` beside the manifest. It retries failed stages, waits
+longer for Colab quota/refusal failures, and aborts early for local fatal
+configuration problems such as missing image or music files.
+
+Colab T4 allocation refusals are treated as likely quota or backend refusal.
+After repeated allocation failures, generation enters long-term retry mode and
+tries again every 30 minutes until Colab assigns a T4. Useful knobs:
+
+```bash
+LTX_COLAB_LONG_RETRY_AFTER=3          # failed Colab allocation cycles
+LTX_COLAB_LONG_RETRY_SECONDS=1800     # 30 minutes
+PIPELINE_LONG_QUOTA_RETRY_SECONDS=1800
+PIPELINE_INFINITE_QUOTA_RETRY=1
+```
+
 All tracks currently in the configured music directory are 380 seconds, so a
 full run selects and generates 190 clips. The manifest is printed when
 preparation begins and lives under `outputs/<timestamp>/manifest.json`.

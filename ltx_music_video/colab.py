@@ -158,6 +158,19 @@ def generate_pending(
     clips_dir.mkdir(parents=True, exist_ok=True)
     runner = PROJECT_ROOT / "colab" / "run_colab.sh"
     retry_delay = int(os.environ.get("LTX_COLAB_RETRY_DELAY", "20"))
+    max_runtime_failures = int(
+        os.environ.get("LTX_COLAB_MAX_RUNTIME_FAILURES", str(max_attempts * 3))
+    )
+    long_retry_after = int(os.environ.get("LTX_COLAB_LONG_RETRY_AFTER", "3"))
+    long_retry_seconds = int(
+        os.environ.get("LTX_COLAB_LONG_RETRY_SECONDS", "1800")
+    )
+    infinite_allocation_retry = os.environ.get(
+        "LTX_COLAB_INFINITE_ALLOCATION_RETRY", "1"
+    ).strip().lower() not in {"0", "false", "no", "off"}
+    runtime_failures = 0
+    allocation_failure_codes = {75}
+    transient_runtime_codes = {75, 76}
     active_batch: list[dict[str, Any]] = []
     prompt_cache_key = ""
     prompt_cache_path: Path | None = None
@@ -205,7 +218,8 @@ def generate_pending(
             "one loaded LTX worker processing all pending clips in a live runtime."
         )
 
-    for attempt in range(1, max_attempts + 1):
+    attempt = 1
+    while attempt <= max_attempts:
         pending = pending_clips(manifest)
         save_manifest(manifest_path, manifest)
         if not pending:
@@ -270,10 +284,49 @@ def generate_pending(
                     newly_finished += 1
                 clip["status"] = "generated"
                 clip.pop("error", None)
+        if newly_finished:
+            runtime_failures = 0
         save_manifest(manifest_path, manifest)
         if not pending_clips(manifest):
             save_manifest(manifest_path, manifest)
             return
+        if (
+            completed.returncode in transient_runtime_codes
+            and newly_finished == 0
+        ):
+            runtime_failures += 1
+            if (
+                completed.returncode in allocation_failure_codes
+                and infinite_allocation_retry
+                and runtime_failures >= long_retry_after
+            ):
+                print(
+                    "Colab T4 allocation appears quota/refusal limited after "
+                    f"{runtime_failures} runtime request failure(s); entering "
+                    "long-term retry mode"
+                )
+                print(
+                    f"Waiting {long_retry_seconds} seconds before requesting "
+                    "another Colab T4 runtime"
+                )
+                time.sleep(long_retry_seconds)
+                continue
+            if runtime_failures > max_runtime_failures:
+                raise RuntimeError(
+                    "Colab runtime/allocation failed "
+                    f"{runtime_failures} time(s) without producing clips; "
+                    f"{len(pending_clips(manifest))} remain"
+                )
+            print(
+                "Colab runtime/allocation failed before producing clips; "
+                "retrying without consuming a generation attempt"
+            )
+            print(
+                f"Waiting {retry_delay} seconds before requesting "
+                "another Colab runtime"
+            )
+            time.sleep(retry_delay)
+            continue
         if completed.returncode == 0 and newly_finished == 0:
             raise RuntimeError("Colab returned success without producing any clips")
         if newly_finished == 0 and attempt == max_attempts:
@@ -287,6 +340,7 @@ def generate_pending(
                 "another Colab runtime"
             )
             time.sleep(retry_delay)
+        attempt += 1
 
     remaining = len(pending_clips(manifest))
     raise RuntimeError(f"Colab generation stopped with {remaining} clip(s) remaining")

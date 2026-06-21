@@ -16,30 +16,33 @@ from PIL import Image
 
 SYSTEM_PROMPT = """Look at the image and write one concise prompt for two seconds
 of clearly visible scene motion and lighting or atmospheric effects. Describe
-localized motion while the subject keeps the same identity, location, and
-overall composition. Generally describe a dynamic motion, a single elaborate dance move, full body motions, bouncing, spinning, twirling, moving hips, a single gymnastic move, a dramatic battle pose. Focus on the move, and the movement of hair and or clothes if applicable. never use simple single limb motions like moving one arm. Never mention camera movement,
-panning reframing, or focus changes.
+contained dance-like motion while the subject keeps the same identity, location,
+and overall composition. Prefer in-place body rhythm: a hip sway, shoulder roll,
+chest bounce, torso dip, pose pulse, or dramatic battle stance. Pair the body
+motion with visible hair and clothing fabric movement when applicable. Never
+describe walking, running, jumping, stepping, turning away, leaving the pose, or
+single-limb-only motion like moving one arm. Never mention camera movement,
+panning, reframing, zooming, or focus changes.
 
-Use one small but clearly perceptible character motion such as hair or loose
-fabric blowing, blinking, breathing, or fingers tightening. Add one or two
-effects that visibly evolve through the shot: flashing neon, shifting colored
-light, curling fog, smoke, dust, sparks, rain, or pulsing energy. Preserve every
-subject, object, outfit, and background. No scene change and no new objects.
-Avoid words such as subtle, barely, faint, tiny, still, static, or
-imperceptible. Use 16-30 words. Return only the prompt.
+Use one clearly perceptible dance/body motion plus hair or loose fabric motion.
+Add one or two effects that visibly evolve through the shot: flashing neon,
+shifting colored light, curling fog, smoke, dust, sparks, rain, or pulsing
+energy. Preserve every subject, object, outfit, and background. No scene change
+and no new objects. Avoid words such as subtle, barely, faint, tiny, still,
+static, or imperceptible. Use 16-30 words. Return only the prompt.
 
 Good examples:
-The woman's long hair and loose fabric blow gently in the wind as neon signs
-flare behind her and thin fog curls around her boots.
+The woman sways her hips in place as long hair and loose fabric whip gently
+while neon signs flare behind her.
 
-The green fighter takes a slow breath as city lights flicker behind him and
-glowing dust swirls softly through the air.
+The green fighter pulses into a battle stance as jacket fabric snaps, hair
+shakes, and glowing dust swirls through the air.
 
-The armored woman's cape edge and loose hair ripple gently as energy sparks
-flash near her feet and colored light rolls across her armor.
+The armored woman rolls her shoulders in place as cape edges ripple, hair
+flicks, and energy sparks flash near her feet.
 
-The pink-haired woman's loose hair tips sway as green energy bands pulse and
-neon reflections shimmer across her unchanged pose."""
+The pink-haired woman bounces rhythmically in place as loose hair tips and skirt
+fabric sway while green energy bands pulse."""
 
 FALLBACK_PROMPT = (
     "The subject blinks softly as loose hair or fabric stirs, existing lights "
@@ -65,10 +68,10 @@ FORBIDDEN_LARGE_MOTION = re.compile(
 LTX_PROMPT_PREFIX = (
     "The camera remains locked with unchanged framing. Preserve the original "
     "subject's identity, appearance, clothing, location, and background while "
-    "the described local motion happens clearly. "
+    "the described contained subject motion happens clearly. "
 )
 LTX_PROMPT_SUFFIX = (
-    " Make the local character motion and evolving lighting or atmospheric "
+    " Make the contained body, hair, fabric, lighting, and atmospheric "
     "effects clearly perceptible throughout the shot; no camera movement, "
     "reframing, new subjects, or scene change."
 )
@@ -153,9 +156,10 @@ class GemmaClient:
                 last_error = exc
                 correction = (
                     "\nYour previous answer violated the rules. Rewrite it without "
-                    "camera language or any whole-body movement. Keep the subject "
-                    "fixed and describe only hair, fabric, blinking, breathing, "
-                    "fingers, lighting, fog, smoke, dust, sparks, rain, or energy."
+                    "camera language, walking, jumping, stepping, turning away, "
+                    "or single-limb-only motion. Keep the subject in place and "
+                    "describe contained dance/body motion with hair, fabric, "
+                    "lighting, fog, smoke, dust, sparks, rain, or energy."
                 )
         raise last_error or RuntimeError("Gemma did not return a usable prompt")
 
