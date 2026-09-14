@@ -13,8 +13,12 @@ model files, credentials, and existing outputs stay on disk and out of Git.
 Exchange explicit filesystem paths and JSON manifests, not imports from sibling
 checkouts. Component commands must run using their own Python environment.
 
-During migration, ignored image and orchestration paths in the original ltxVideo
-checkout remain available. They are transferred when their destination is handled;
-compatibility links preserve old launch paths. The old copied SA3 Colab example is
+The migration is complete. Ignored image and orchestration paths in the original
+ltxVideo checkout are compatibility links to the images and media-pipeline
+repositories; these preserve old launch paths. The old copied SA3 Colab example is
 preserved locally under `.local/reorganization/sa3ColabExample` for comparison at
 the SA3 step. Original source and Git-history backups are in that same directory.
+
+Published repositories: [ltx-video](https://github.com/amazingfly/ltx-video),
+[sa3](https://github.com/amazingfly/sa3), [images](https://github.com/amazingfly/images),
+and [media-pipeline](https://github.com/amazingfly/media-pipeline).
