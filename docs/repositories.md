@@ -4,7 +4,8 @@
   video, and selected shorts. The original `ltx_music_video` and
   `antigravityPicker` import/command names are retained for compatibility.
 - **sa3**: audio generation, queues, audio library and review utilities.
-- **images**: image generation/training, storybook rendering and visual validation.
+- **images**: image generation/training and reusable visual validation.
+- **storybook-pipeline**: story compilation, scene selection/review, narration, and story assembly.
 - **media-pipeline**: orchestration, dataset/track selection, prompt provenance,
   publishing, and configuration tying the three components together.
 
@@ -21,4 +22,5 @@ the SA3 step. Original source and Git-history backups are in that same directory
 
 Published repositories: [ltx-video](https://github.com/amazingfly/ltx-video),
 [sa3](https://github.com/amazingfly/sa3), [images](https://github.com/amazingfly/images),
+[storybook-pipeline](https://github.com/amazingfly/storybook-pipeline),
 and [media-pipeline](https://github.com/amazingfly/media-pipeline).
