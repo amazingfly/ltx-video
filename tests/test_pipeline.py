@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import unittest
 import importlib.util
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -16,9 +17,18 @@ from ltx_music_video.cli import (
     resolve_image_directory,
 )
 from ltx_music_video.gemma import (
+    LITTLE_QUEEN_MODE_FALLBACKS,
+    build_diversity_instruction,
     build_ltx_prompt,
     clean_prompt,
+    fallback_prompt_for_style,
+    little_queen_allows_secondary_reaction,
+    little_queen_mode_for_clip,
+    parse_little_queen_response,
     prepare_image,
+    recent_phrase_bans,
+    validate_little_queen_mode_prompt,
+    validate_style_prompt,
     validate_motion_prompt,
 )
 from ltx_music_video.manifest import load_manifest, save_manifest
@@ -27,6 +37,7 @@ from ltx_music_video.media import (
     conditioned_video_is_valid,
     crossfade_timeline_duration,
     evenly_spaced_indices,
+    list_images,
     required_clip_count,
     required_crossfade_clip_count,
     resolve_transition_output_fps,
@@ -145,6 +156,32 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(len(set(selected[:3])), 3)
         self.assertEqual(len(selected), 5)
 
+    def test_image_selection_can_preserve_curated_order(self) -> None:
+        images = [Path(f"/tmp/{index}.png") for index in range(3)]
+        selected = choose_repeated(
+            images,
+            5,
+            random.Random(10),
+            shuffle=False,
+        )
+        self.assertEqual(selected, images + images[:2])
+
+    def test_list_images_sorts_symlink_names_before_resolving(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = root / "sources"
+            selected = root / "selected"
+            sources.mkdir()
+            selected.mkdir()
+            last = sources / "a.png"
+            first = sources / "z.png"
+            Image.new("RGB", (4, 4), "red").save(last)
+            Image.new("RGB", (4, 4), "blue").save(first)
+            (selected / "lq_0001.png").symlink_to(first)
+            (selected / "lq_0002.png").symlink_to(last)
+
+            self.assertEqual(list_images(selected), [first.resolve(), last.resolve()])
+
     def test_clean_prompt_removes_small_model_wrapping(self) -> None:
         raw = '  Image-to-video prompt: "The subject blinks; camera pushes in."  '
         self.assertEqual(clean_prompt(raw), "The subject blinks; camera pushes in.")
@@ -184,6 +221,224 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("identity", prompt)
         self.assertIn("clearly perceptible", prompt)
         self.assertIn("no camera movement", prompt)
+
+    def test_little_queen_ltx_prompt_allows_magical_overlays(self) -> None:
+        prompt = build_ltx_prompt(
+            (
+                "Rainbow energy compresses around the little queen's current "
+                "pose, then erupts as a roaring aura column while one circular "
+                "shockwave blasts across the background."
+            ),
+            "little-queen",
+        )
+        self.assertIn("anchored in its source position", prompt)
+        self.assertIn("exact starting pose", prompt)
+        self.assertIn("Only the described luminous transformation", prompt)
+        self.assertNotIn("energy wings", prompt)
+        self.assertNotIn("morphing", prompt)
+
+    def test_little_queen_ltx_wrapper_does_not_invent_physical_details(self) -> None:
+        prompt = build_ltx_prompt(
+            (
+                "Pink-gold light gathers around the close-framed queen's "
+                "silhouette, then erupts as one circular aura wave while her "
+                "fierce expression and exact pose remain unchanged."
+            ),
+            "little-queen",
+        )
+
+        self.assertNotIn("crown", prompt.lower())
+        self.assertNotIn("dress", prompt.lower())
+        self.assertNotIn("wings", prompt.lower())
+        self.assertNotIn("armor", prompt.lower())
+        self.assertNotIn("beam", prompt.lower())
+
+    def test_little_queen_style_rejects_unsafe_plural_anatomy(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "unsafe plural anatomy"):
+            validate_style_prompt(
+                (
+                    "Rainbow energy gathers around the queen's arms while she "
+                    "braces in place, then erupts into one roaring aura column "
+                    "and a circular shockwave."
+                ),
+                "little-queen",
+            )
+
+    def test_both_hands_require_positive_visual_evidence(self) -> None:
+        prompt = (
+            "The little queen charges a star core between both hands, then "
+            "fires one focused rainbow beam as recoil light snaps around her "
+            "silhouette."
+        )
+        with self.assertRaisesRegex(RuntimeError, "without verified two-hand"):
+            validate_little_queen_mode_prompt(prompt, "attack")
+        validate_little_queen_mode_prompt(
+            prompt,
+            "attack",
+            two_hands_clear=True,
+        )
+
+    def test_little_queen_response_parses_hidden_hand_evidence(self) -> None:
+        prompt, evidence = parse_little_queen_response(
+            "TWO_HANDS_CLEAR: yes\nPROMPT: The little queen charges a star core "
+            "between both hands, then fires one focused rainbow beam as recoil "
+            "light snaps around her silhouette."
+        )
+        self.assertTrue(evidence)
+        self.assertTrue(prompt.startswith("The little queen"))
+
+    def test_little_queen_style_rejects_visual_analysis_language(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "visual-analysis language"):
+            validate_style_prompt(
+                (
+                    "Rainbow energy gathers around the queen's shown hand and "
+                    "silhouette, then erupts into one roaring aura column as a "
+                    "circular shockwave blasts outward."
+                ),
+                "little-queen",
+            )
+
+    def test_little_queen_style_rejects_template_collapse(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "too generic"):
+            validate_style_prompt(
+                (
+                    "The little queen performs a cute pose pulse as her dress "
+                    "fabric ripples, while sparkling starlight bursts emanate "
+                    "from her crown."
+                ),
+                "little-queen",
+            )
+
+    def test_little_queen_style_rejects_old_repetitive_phrases(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "too generic"):
+            validate_style_prompt(
+                (
+                    "The little queen performs a contained spin as her skirt "
+                    "flares and wand energy spirals around the castle tower."
+                ),
+                "little-queen",
+            )
+
+    def test_little_queen_diversity_instruction_rotates_and_bans_recent_phrases(self) -> None:
+        recent = [
+            (
+                "The little queen plants her feet in a power stance as "
+                "prismatic lightning crackles around her crown."
+            ),
+            (
+                "The little queen thrusts both hands upward as effervescent "
+                "rainbow energy surges around her sleeves."
+            ),
+        ]
+
+        first = build_diversity_instruction("little-queen", 0, recent)
+        second = build_diversity_instruction("little-queen", 1, recent)
+
+        self.assertIn("Required creative assignment", first)
+        self.assertIn("Mode: transformation", first)
+        self.assertIn("battle-armor ignition", first)
+        self.assertIn("Mode: power-up", second)
+        self.assertIn("dragon-prism aura roar", second)
+        self.assertIn("mode and high-energy payoff are mandatory", first)
+        self.assertIn("energy buildup, the word 'then'", first)
+        self.assertIn("Do not mention hair or fabric", first)
+        self.assertIn("existing background light", first)
+        self.assertIn('"power stance"', first)
+        self.assertIn('"prismatic lightning"', first)
+        self.assertIn('"effervescent rainbow energy"', first)
+        self.assertNotEqual(first, second)
+
+    def test_little_queen_schedule_has_exact_transformation_heavy_quota(self) -> None:
+        self.assertEqual(
+            Counter(little_queen_mode_for_clip(index) for index in range(190)),
+            Counter(
+                {
+                    "transformation": 67,
+                    "power-up": 57,
+                    "attack": 47,
+                    "environmental-spell": 19,
+                }
+            ),
+        )
+
+    def test_little_queen_mode_requires_buildup_connector_and_payoff(self) -> None:
+        missing_buildup = (
+            "The little queen remains fierce before her silhouette, then fires "
+            "one focused rainbow beam as recoil light snaps backward around her."
+        )
+        missing_connector = (
+            "The little queen charges a star core before her silhouette and "
+            "fires one focused rainbow beam as recoil light snaps backward."
+        )
+        with self.assertRaisesRegex(RuntimeError, "lacks an energy buildup"):
+            validate_little_queen_mode_prompt(missing_buildup, "attack")
+        with self.assertRaisesRegex(RuntimeError, "lacks an explicit"):
+            validate_little_queen_mode_prompt(missing_connector, "attack")
+
+    def test_little_queen_wrong_mode_is_rejected(self) -> None:
+        attack = (
+            "The little queen charges a star core before her silhouette, then "
+            "fires one focused rainbow beam as recoil light snaps backward "
+            "through the surrounding aura."
+        )
+        validate_little_queen_mode_prompt(attack, "attack")
+        with self.assertRaisesRegex(RuntimeError, "required transformation"):
+            validate_little_queen_mode_prompt(attack, "transformation")
+
+    def test_moon_prism_shield_release_is_a_valid_counterattack(self) -> None:
+        prompt = (
+            "Dragon-shaped aura coils around her crown and both hands, then "
+            "slams outward as a forceful moon-prism shield burst with violent "
+            "lightning arcs."
+        )
+        validate_little_queen_mode_prompt(
+            prompt,
+            "attack",
+            two_hands_clear=True,
+        )
+
+    def test_little_queen_hair_motion_is_limited_by_clip_index(self) -> None:
+        prompt = (
+            "Rainbow energy compresses around the little queen as her hair "
+            "streams upward, then the roaring aura erupts and blasts one "
+            "circular shockwave outward."
+        )
+        self.assertFalse(little_queen_allows_secondary_reaction(1))
+        self.assertTrue(little_queen_allows_secondary_reaction(4))
+        with self.assertRaisesRegex(RuntimeError, "reserved for primary action"):
+            validate_little_queen_mode_prompt(
+                prompt,
+                "power-up",
+                clip_index=1,
+            )
+        validate_little_queen_mode_prompt(prompt, "power-up", clip_index=4)
+
+    def test_every_little_queen_mode_fallback_passes_its_validator(self) -> None:
+        for index in range(20):
+            mode = little_queen_mode_for_clip(index)
+            prompt = fallback_prompt_for_style("little-queen", index)
+            self.assertEqual(prompt, LITTLE_QUEEN_MODE_FALLBACKS[mode])
+            validate_motion_prompt(prompt)
+            validate_style_prompt(prompt, "little-queen")
+            validate_little_queen_mode_prompt(
+                prompt,
+                mode,
+                clip_index=index,
+            )
+
+    def test_recent_phrase_bans_extracts_limited_overused_terms(self) -> None:
+        bans = recent_phrase_bans(
+            [
+                (
+                    "The little queen plants her feet in a power stance as "
+                    "prismatic lightning crackles around her crown."
+                )
+            ]
+        )
+
+        self.assertIn("power stance", bans)
+        self.assertIn("prismatic lightning", bans)
+        self.assertIn("around her crown", bans)
 
     def test_motion_generation_contract_uses_start_only_conditioning(self) -> None:
         manifest = {
@@ -229,10 +484,16 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(converted.size, (200, 100))
 
     def test_missing_default_image_dir_uses_existing_fallback(self) -> None:
-        resolved = resolve_image_directory(
-            Path("/mnt/storage/projects/agentic/images/scripts/outputs")
-        )
-        self.assertEqual(resolved.name, "output")
+        from unittest.mock import patch
+        import ltx_music_video.cli as cli
+        with tempfile.TemporaryDirectory() as directory:
+            missing = Path(directory) / "outputs"
+            fallback = Path(directory) / "output"
+            fallback.mkdir()
+            with patch.object(cli, "DEFAULT_IMAGE_DIR", missing), patch.object(
+                cli, "IMAGE_DIR_FALLBACK", fallback
+            ):
+                self.assertEqual(resolve_image_directory(missing), fallback)
 
     def test_noise_video_fails_conditioning_validation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

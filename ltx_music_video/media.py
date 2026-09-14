@@ -123,11 +123,12 @@ def evenly_spaced_indices(item_count: int, selected_count: int) -> list[int]:
 
 
 def list_images(directory: Path) -> list[Path]:
-    return sorted(
+    paths = sorted(directory.iterdir(), key=lambda path: path.name)
+    return [
         path.resolve()
-        for path in directory.iterdir()
+        for path in paths
         if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
-    )
+    ]
 
 
 def list_audio(directory: Path) -> list[Path]:

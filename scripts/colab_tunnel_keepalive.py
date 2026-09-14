@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import socket
 import sys
 import time
 from datetime import datetime, timezone
@@ -14,6 +15,24 @@ from requests.exceptions import ReadTimeout
 
 from colab_cli.auth import AuthProvider
 from colab_cli.common import state
+
+
+def force_ipv4_dns() -> None:
+    getaddrinfo = socket.getaddrinfo
+
+    def ipv4_getaddrinfo(
+        host: str | bytes | None,
+        port: str | int | None,
+        family: int = 0,
+        type: int = 0,
+        proto: int = 0,
+        flags: int = 0,
+    ) -> list[tuple[int, int, int, str, tuple[object, ...]]]:
+        if family in (0, socket.AF_UNSPEC):
+            family = socket.AF_INET
+        return getaddrinfo(host, port, family, type, proto, flags)
+
+    socket.getaddrinfo = ipv4_getaddrinfo
 
 
 def utc_now() -> str:
@@ -88,11 +107,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--request-timeout", type=float, default=10.0)
     parser.add_argument("--interval", type=float, default=60.0)
     parser.add_argument("--loop", action="store_true")
+    parser.add_argument("--ipv4", action="store_true")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    if args.ipv4:
+        force_ipv4_dns()
     while True:
         report = ping_tunnel(args)
         print(json.dumps(report, sort_keys=True), flush=True)

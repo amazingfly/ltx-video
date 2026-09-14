@@ -7,10 +7,26 @@ name = "ltx-music-video"
 version = "0.1.0"
 description = "Build music videos from still images with Gemma 4 and LTX-Video on Colab."
 requires-python = ">=3.10"
-dependencies = ["numpy>=1.26", "Pillow>=10", "playwright>=1.52"]
+dependencies = [
+  "essentia==2.1b6.dev1389",
+  "librosa>=0.11",
+  "numpy>=1.26",
+  "Pillow>=10",
+  "playwright>=1.52",
+]
 
 [project.scripts]
 ltx-music-video = "ltx_music_video.cli:main"
+antigravity-clipper = "antigravityPicker.cli:main"
+antigravity-clipper-v3 = "antigravityPicker.cliV3:main"
 
 [tool.setuptools.packages.find]
-include = ["ltx_music_video*"]
+include = ["ltx_music_video*", "antigravityPicker*"]
+
+[dependency-groups]
+dev = ["pytest>=8,<10"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "--ignore=tests/test_qwen35_storybook_local.py --ignore=tests/test_qwen35_storybook_validation.py --ignore=tests/test_validated_littlequeen_workflow.py --ignore=tests/test_uploader.py"

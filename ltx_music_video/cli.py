@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import secrets
 import subprocess
@@ -10,7 +11,12 @@ from pathlib import Path
 from typing import Any
 
 from .colab import generate_pending, generated_clip_is_valid, generation_sha256
-from .gemma import FALLBACK_PROMPT, GemmaClient, build_ltx_prompt
+from .gemma import (
+    GemmaClient,
+    build_ltx_prompt,
+    fallback_prompt_for_style,
+    little_queen_mode_for_clip,
+)
 from .manifest import load_manifest, save_manifest, utc_now
 from .media import (
     DEFAULT_MINIMUM_CHANGED_PERCENT,
@@ -31,13 +37,14 @@ from .media import (
 )
 
 
-DEFAULT_IMAGE_DIR = Path("/mnt/storage/projects/agentic/images/scripts/outputs")
+DEFAULT_IMAGE_DIR = Path(os.environ.get("LTX_IMAGE_DIR", "/mnt/storage/projects/agentic/images/scripts/outputs"))
 IMAGE_DIR_FALLBACK = Path("/mnt/storage/projects/agentic/images/scripts/output")
-DEFAULT_MUSIC_DIR = Path("/home/derek/projects/agentic/sa3/musicLibrary/ogg/yes")
+DEFAULT_MUSIC_DIR = Path(os.environ.get("LTX_MUSIC_DIR", "/home/derek/projects/agentic/sa3/musicLibrary/ogg/yes"))
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_GEMMA_START = PROJECT_ROOT / "scripts" / "start_gemma_vision.sh"
 DEFAULT_GEMMA_STOP = PROJECT_ROOT / "scripts" / "stop_gemma_vision.sh"
-MOTION_PROMPT_CONTRACT_VERSION = 4
+MOTION_PROMPT_CONTRACT_VERSION = 6
+LITTLE_QUEEN_MOTION_PROMPT_VERSION = 7
 DEFAULT_TRANSITIONS = (
     "fade",
     "dissolve",
@@ -95,7 +102,18 @@ def _add_prepare_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--clip-seconds", type=float, default=2.0)
     parser.add_argument("--selection-seed", type=int)
+    parser.add_argument(
+        "--preserve-image-order",
+        action="store_true",
+        help="Select images in filename order instead of shuffling each full batch.",
+    )
     parser.add_argument("--gemma-url", default="http://127.0.0.1:8080")
+    parser.add_argument(
+        "--motion-style",
+        choices=("rave", "little-queen"),
+        default="rave",
+        help="Gemma motion-prompt style to use for new or regenerated prompts.",
+    )
     parser.add_argument("--gemma-start", type=Path, default=DEFAULT_GEMMA_START)
     parser.add_argument("--gemma-stop", type=Path, default=DEFAULT_GEMMA_STOP)
     parser.add_argument(
@@ -134,8 +152,9 @@ def _add_colab_options(parser: argparse.ArgumentParser) -> None:
         type=int,
         default=0,
         help=(
-            "Maximum clips sent to each Colab runtime; 0 sends all remaining "
-            "clips so the loaded LTX model is reused for the whole pending set"
+            "Image chunk size for a live Colab runtime; nonzero streams chunks "
+            "into one loaded LTX worker, while 0 uploads all remaining clips at "
+            "once"
         ),
     )
     parser.add_argument("--timeout-seconds", type=int, default=43200)
@@ -193,19 +212,27 @@ def default_manifest_path() -> Path:
     return (Path("outputs") / timestamp / "manifest.json").resolve()
 
 
-def choose_repeated(items: list[Path], count: int, rng: random.Random) -> list[Path]:
+def choose_repeated(
+    items: list[Path],
+    count: int,
+    rng: random.Random,
+    *,
+    shuffle: bool = True,
+) -> list[Path]:
     if not items:
         raise ValueError("No images are available")
     selected: list[Path] = []
     while len(selected) < count:
         batch = items.copy()
-        rng.shuffle(batch)
+        if shuffle:
+            rng.shuffle(batch)
         selected.extend(batch[: count - len(selected)])
     return selected
 
 
 def apply_motion_generation_contract(manifest: dict[str, Any]) -> None:
     ltx_settings = manifest["settings"]["ltx"]
+    prompt_style = manifest["settings"].get("motion_style", "rave")
     previous_prompt_contract = int(
         ltx_settings.get("prompt_contract_version", 0)
     )
@@ -226,7 +253,12 @@ def apply_motion_generation_contract(manifest: dict[str, Any]) -> None:
                 "worst quality, frozen frame, static image, no motion, "
                 "inconsistent motion, blurry, jittery, distorted, abrupt "
                 "movement, scene change, camera movement, panning, zooming, "
-                "reframing, identity change, morphing"
+                "reframing, identity change, "
+                + (
+                    "anatomy change, physical clothing replacement"
+                    if prompt_style == "little-queen"
+                    else "morphing"
+                )
             ),
         }
     )
@@ -234,7 +266,7 @@ def apply_motion_generation_contract(manifest: dict[str, Any]) -> None:
         for clip in manifest["clips"]:
             motion_prompt = clip.get("motion_prompt")
             if motion_prompt:
-                clip["prompt"] = build_ltx_prompt(motion_prompt)
+                clip["prompt"] = build_ltx_prompt(motion_prompt, prompt_style)
                 if clip.get("status") == "generated":
                     clip["status"] = "prompted"
     generation_signature = generation_sha256(ltx_settings)
@@ -271,7 +303,12 @@ def prepare_manifest(args: argparse.Namespace) -> tuple[Path, dict[str, Any]]:
         rng = random.Random(selection_seed)
         audio_duration = duration_seconds(music)
         count = required_clip_count(audio_duration, args.clip_seconds)
-        selected = choose_repeated(images, count, rng)
+        selected = choose_repeated(
+            images,
+            count,
+            rng,
+            shuffle=not args.preserve_image_order,
+        )
         run_dir = manifest_path.parent
         clips_dir = run_dir / "clips"
 
@@ -288,6 +325,12 @@ def prepare_manifest(args: argparse.Namespace) -> tuple[Path, dict[str, Any]]:
             "settings": {
                 "clip_seconds": args.clip_seconds,
                 "gemma_url": args.gemma_url,
+                "motion_style": args.motion_style,
+                "motion_prompt_version": (
+                    LITTLE_QUEEN_MOTION_PROMPT_VERSION
+                    if args.motion_style == "little-queen"
+                    else 1
+                ),
                 "ltx": {
                     "model_repo": "Lightricks/LTX-Video",
                     "checkpoint": "ltxv-2b-0.9.8-distilled.safetensors",
@@ -314,7 +357,12 @@ def prepare_manifest(args: argparse.Namespace) -> tuple[Path, dict[str, Any]]:
                         "worst quality, frozen frame, static image, no motion, "
                         "inconsistent motion, blurry, jittery, distorted, abrupt "
                         "movement, scene change, camera movement, panning, zooming, "
-                        "reframing, identity change, morphing"
+                        "reframing, identity change, "
+                        + (
+                            "anatomy change, physical clothing replacement"
+                            if args.motion_style == "little-queen"
+                            else "morphing"
+                        )
                     ),
                 },
             },
@@ -326,6 +374,16 @@ def prepare_manifest(args: argparse.Namespace) -> tuple[Path, dict[str, Any]]:
                     "motion_prompt": None,
                     "prompt": None,
                     "prompt_source": None,
+                    "motion_mode": (
+                        little_queen_mode_for_clip(index)
+                        if args.motion_style == "little-queen"
+                        else None
+                    ),
+                    "motion_prompt_version": (
+                        LITTLE_QUEEN_MOTION_PROMPT_VERSION
+                        if args.motion_style == "little-queen"
+                        else 1
+                    ),
                     "seed": rng.randrange(0, 2**31),
                     "clip_path": str((clips_dir / f"clip_{index:04d}.mp4").resolve()),
                     "status": "selected",
@@ -342,10 +400,25 @@ def prepare_manifest(args: argparse.Namespace) -> tuple[Path, dict[str, Any]]:
     apply_motion_generation_contract(manifest)
 
     if args.regenerate_prompts:
+        prompt_style = manifest["settings"].get("motion_style", args.motion_style)
+        if prompt_style == "little-queen":
+            manifest["settings"]["motion_prompt_version"] = (
+                LITTLE_QUEEN_MOTION_PROMPT_VERSION
+            )
         for clip in manifest["clips"]:
             clip["motion_prompt"] = None
             clip["prompt"] = None
             clip["prompt_source"] = None
+            clip["motion_mode"] = (
+                little_queen_mode_for_clip(int(clip.get("index", 0)))
+                if prompt_style == "little-queen"
+                else None
+            )
+            clip["motion_prompt_version"] = (
+                LITTLE_QUEEN_MOTION_PROMPT_VERSION
+                if prompt_style == "little-queen"
+                else 1
+            )
             clip["status"] = "selected"
             clip.pop("prompt_error", None)
         manifest["status"] = "preparing"
@@ -358,33 +431,84 @@ def prepare_manifest(args: argparse.Namespace) -> tuple[Path, dict[str, Any]]:
         if not clip.get("motion_prompt") or not clip.get("prompt")
     ]
     if missing_prompts:
+        prompt_style = manifest["settings"].get("motion_style", args.motion_style)
+        if prompt_style == "little-queen":
+            manifest["settings"]["motion_prompt_version"] = (
+                LITTLE_QUEEN_MOTION_PROMPT_VERSION
+            )
         client = GemmaClient(
             base_url=manifest["settings"].get("gemma_url", args.gemma_url),
             start_command=args.gemma_start,
+            prompt_style=manifest["settings"].get(
+                "motion_style",
+                args.motion_style,
+            ),
         )
         client.ensure_ready()
         try:
+            recent_motion_prompts = [
+                str(clip["motion_prompt"])
+                for clip in manifest["clips"]
+                if clip.get("motion_prompt")
+            ]
             for position, clip in enumerate(missing_prompts, start=1):
+                clip_index = int(clip.get("index", position - 1))
+                motion_mode = (
+                    little_queen_mode_for_clip(clip_index)
+                    if prompt_style == "little-queen"
+                    else None
+                )
                 print(
                     f"Gemma prompt {position}/{len(missing_prompts)}: "
                     f"{Path(clip['image_path']).name}"
+                    + (f" [{motion_mode}]" if motion_mode else "")
                 )
                 try:
-                    motion_prompt = client.describe_motion(Path(clip["image_path"]))
+                    motion_prompt = client.describe_motion(
+                        Path(clip["image_path"]),
+                        clip_index=clip_index,
+                        recent_prompts=recent_motion_prompts,
+                    )
                     clip["motion_prompt"] = motion_prompt
-                    clip["prompt"] = build_ltx_prompt(motion_prompt)
+                    clip["prompt"] = build_ltx_prompt(
+                        motion_prompt,
+                        manifest["settings"].get("motion_style", args.motion_style),
+                    )
                     clip["prompt_source"] = "gemma4-e4b"
+                    clip["motion_mode"] = motion_mode
+                    clip["motion_prompt_version"] = (
+                        LITTLE_QUEEN_MOTION_PROMPT_VERSION
+                        if prompt_style == "little-queen"
+                        else 1
+                    )
                     clip["status"] = "prompted"
                     clip.pop("prompt_error", None)
+                    recent_motion_prompts.append(motion_prompt)
+                    print(f"  -> {motion_prompt}", flush=True)
                 except Exception as exc:
                     if args.strict_prompts:
                         raise
-                    clip["motion_prompt"] = FALLBACK_PROMPT
-                    clip["prompt"] = build_ltx_prompt(FALLBACK_PROMPT)
+                    fallback_prompt = fallback_prompt_for_style(
+                        prompt_style,
+                        clip_index,
+                    )
+                    clip["motion_prompt"] = fallback_prompt
+                    clip["prompt"] = build_ltx_prompt(
+                        fallback_prompt,
+                        manifest["settings"].get("motion_style", args.motion_style),
+                    )
                     clip["prompt_source"] = "fallback"
+                    clip["motion_mode"] = motion_mode
+                    clip["motion_prompt_version"] = (
+                        LITTLE_QUEEN_MOTION_PROMPT_VERSION
+                        if prompt_style == "little-queen"
+                        else 1
+                    )
                     clip["prompt_error"] = str(exc)
                     clip["status"] = "prompted"
+                    recent_motion_prompts.append(fallback_prompt)
                     print(f"Gemma failed; using fallback prompt: {exc}")
+                    print(f"  -> {fallback_prompt}", flush=True)
                 save_manifest(manifest_path, manifest)
         finally:
             if (

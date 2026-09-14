@@ -87,25 +87,29 @@ def cycle_token(config_dir: Path, dry_run: bool = False) -> Path:
         raise FileNotFoundError(f"No Colab token candidates found in {config_dir}")
 
     current_label = load_state(config_dir)
-    current_index = next(
-        (index for index, path in enumerate(candidates) if path.name == current_label),
-        None,
+    active_bytes = read_bytes(active)
+    matched_index = next(
+        (
+            index
+            for index, path in enumerate(candidates)
+            if read_bytes(path) == active_bytes
+        ),
+        -1,
     )
-    if current_index is None:
-        active_bytes = read_bytes(active)
-        matched_index = next(
+    if matched_index >= 0:
+        # The active file is authoritative after an external auth flow.
+        current_index = matched_index
+        current_label = candidates[current_index].name
+    else:
+        current_index = next(
             (
                 index
                 for index, path in enumerate(candidates)
-                if read_bytes(path) == active_bytes
+                if path.name == current_label
             ),
             -1,
         )
-        if matched_index >= 0:
-            current_index = matched_index
-            current_label = candidates[current_index].name
-        else:
-            current_index = -1
+        if current_index < 0:
             current_label = "<unmatched active token>"
 
     next_index = (current_index + 1) % len(candidates)

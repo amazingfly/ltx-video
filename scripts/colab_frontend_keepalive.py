@@ -17,6 +17,7 @@ from playwright.async_api import Page, async_playwright
 
 FIREFOX_ROOT = Path.home() / "snap/firefox/common/.mozilla/firefox"
 CHROMIUM = Path("/usr/bin/chromium-browser")
+DISCONNECTED_STATES = {"Connect", "Reconnect"}
 
 
 def find_cookie_database() -> Path:
@@ -98,12 +99,12 @@ async def click_connect(page: Page) -> None:
 
 async def wait_until_connected(page: Page) -> str | None:
     state = await connect_text(page)
-    if state == "Connect":
+    if state in DISCONNECTED_STATES:
         await click_connect(page)
     for _ in range(30):
         await page.wait_for_timeout(2_000)
         state = await connect_text(page)
-        if state not in {"Connect", "Connecting"}:
+        if state not in {*DISCONNECTED_STATES, "Connecting"}:
             return state
     raise RuntimeError(f"Colab frontend did not connect; final state={state!r}")
 
@@ -187,7 +188,7 @@ async def keep_alive(
                 if page.is_closed():
                     raise RuntimeError("The Colab keepalive page closed unexpectedly")
                 state = await connect_text(page)
-                if state == "Connect":
+                if state in DISCONNECTED_STATES:
                     await wait_until_connected(page)
                 print(f"Colab frontend heartbeat: state={state!r}", flush=True)
         finally:

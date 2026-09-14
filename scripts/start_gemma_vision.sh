@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE_DIR="/home/derek/projects/hug/gemma4_llamacpp"
-SERVER="${BASE_DIR}/llama.cpp/build/bin/llama-server"
-MODEL="${BASE_DIR}/models/gemma4/google_gemma-4-E4B-it-Q4_K_M.gguf"
-MMPROJ="${BASE_DIR}/models/gemma4/mmproj-google_gemma-4-E4B-it-f16.gguf"
+BASE_DIR="${GEMMA_BASE_DIR:-/home/derek/projects/hug/gemma4_llamacpp}"
+SERVER="${GEMMA_SERVER:-${BASE_DIR}/llama.cpp/build/bin/llama-server}"
+MODEL="${GEMMA_MODEL:-${BASE_DIR}/models/gemma4/google_gemma-4-E4B-it-Q4_K_M.gguf}"
+MMPROJ="${GEMMA_MMPROJ:-${BASE_DIR}/models/gemma4/mmproj-google_gemma-4-E4B-it-f16.gguf}"
 PID_FILE="/tmp/ltx_gemma4_vision.pid"
 LOG_FILE="/tmp/ltx_gemma4_vision.log"
 HOST="127.0.0.1"
 PORT="8080"
+GEMMA_REASONING="${GEMMA_REASONING:-on}"
+GEMMA_REASONING_BUDGET="${GEMMA_REASONING_BUDGET:-160}"
 
 [[ -x "${SERVER}" ]] || { echo "Missing llama-server: ${SERVER}" >&2; exit 1; }
 [[ -f "${MODEL}" ]] || { echo "Missing Gemma model: ${MODEL}" >&2; exit 1; }
@@ -29,8 +31,9 @@ setsid "${SERVER}" \
   --ctx-size 8192 \
   --parallel 1 \
   --n-gpu-layers 0 \
-  --reasoning off \
-  --reasoning-budget 0 \
+  --reasoning "${GEMMA_REASONING}" \
+  --reasoning-format deepseek \
+  --reasoning-budget "${GEMMA_REASONING_BUDGET}" \
   --timeout 86400 \
   --batch-size 2048 \
   --ubatch-size 2048 \
@@ -56,4 +59,3 @@ done
 
 echo "Gemma vision server startup timed out. See ${LOG_FILE}" >&2
 exit 1
-

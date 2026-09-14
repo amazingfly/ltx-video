@@ -410,7 +410,20 @@ def parse_args() -> argparse.Namespace:
         if os.environ.get("MUSIC_TRACK")
         else None,
     )
+    parser.add_argument(
+        "--image-dir",
+        type=Path,
+        default=Path(os.environ["IMAGE_DIR"])
+        if os.environ.get("IMAGE_DIR")
+        else None,
+    )
+    parser.add_argument(
+        "--motion-style",
+        choices=("rave", "little-queen"),
+        default=os.environ.get("MOTION_STYLE", "rave"),
+    )
     parser.add_argument("--selection-seed", type=int)
+    parser.add_argument("--preserve-image-order", action="store_true")
     parser.add_argument("--regenerate-prompts", action="store_true")
     parser.add_argument("--session", default=os.environ.get("COLAB_SESSION", "ltx-music-video"))
     parser.add_argument("--gpu", default=os.environ.get("COLAB_GPU", "T4"))
@@ -480,10 +493,15 @@ def main() -> int:
     logger.info(f"Error log: {logger.error_log}")
 
     prepare = ["ltx-music-video", "prepare", "--manifest", str(manifest_path)]
+    if args.image_dir:
+        prepare.extend(["--image-dir", str(args.image_dir.resolve())])
+    prepare.extend(["--motion-style", args.motion_style])
     if args.music:
         prepare.extend(["--music", str(args.music.resolve())])
     if args.selection_seed is not None:
         prepare.extend(["--selection-seed", str(args.selection_seed)])
+    if args.preserve_image_order:
+        prepare.append("--preserve-image-order")
     if args.regenerate_prompts:
         prepare.append("--regenerate-prompts")
 

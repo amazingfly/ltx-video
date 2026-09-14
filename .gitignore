@@ -1,7 +1,41 @@
+# Python and development environments
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
 *.egg-info/
 .venv/
+build/
+dist/
+.coverage
+htmlcov/
+# Local media, model weights, run state and credentials
 outputs/
+.local/
+*.log
+*.pid
+.env
+.env.*
+!.env.example
+*.safetensors
+*.gguf
+client_secret*.json
+youtube_token*.json
+auth/*
+!auth/.gitkeep
+# Compatibility paths owned by the images and media-pipeline repositories
+/scripts/flux2_littlequeen_zerogpu
+/scripts/flux2_littlequeen_zerogpu_v2
+/scripts/flux2_lora_zerogpu_eval
+/scripts/flux2_storybook_colab
+/scripts/qwen35_storybook_local
+/scripts/qwen35_storybook_validation
+/scripts/build_curated_storybook.py
+/scripts/curated_the_witches_trick_v1.json
+/scripts/run_validated_littlequeen_workflow.py
+/scripts/upload_video.py
+/promptGetter
+/tests/test_qwen35_storybook_local.py
+/tests/test_qwen35_storybook_validation.py
+/tests/test_validated_littlequeen_workflow.py
+/tests/test_uploader.py

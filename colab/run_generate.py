@@ -8,6 +8,9 @@ import json
 import os
 import traceback
 import gc
+import shutil
+import tarfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -45,6 +48,7 @@ from ltx_video.utils.skip_layer_strategy import SkipLayerStrategy
 ROOT = Path("/content/ltx_music_video")
 JOB_ROOT = ROOT / "job"
 JOB_PATH = JOB_ROOT / "job.json"
+CHUNKS_ROOT = ROOT / "chunks"
 OUTPUTS = Path("/content/outputs")
 PROMPT_CACHE = JOB_ROOT / "prompt_embeddings.pt"
 PROMPT_CACHE_OUTPUT = OUTPUTS / "prompt_embeddings.pt"
@@ -296,7 +300,12 @@ def encode_prompts(
             negative_embeds.cpu(),
             negative_mask.cpu(),
         )
-        for clip in clips:
+        for index, clip in enumerate(clips, start=1):
+            if index == 1 or index % 10 == 0 or index == len(clips):
+                print(
+                    f"Encoding prompt embeddings {index}/{len(clips)}",
+                    flush=True,
+                )
             inputs = tokenizer(
                 clip["prompt"],
                 padding="max_length",
@@ -690,14 +699,102 @@ def generate_one(
     )
 
 
+def clip_report(
+    clip: dict[str, Any],
+    output: Path,
+    generation_details: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "id": clip["id"],
+        "completed_at": now(),
+        "output_name": output.name,
+        "bytes": output.stat().st_size,
+        "sha256": sha256(output),
+        "prompt_sha256": hashlib.sha256(clip["prompt"].encode("utf-8")).hexdigest(),
+        "generation_sha256": clip["generation_sha256"],
+        "anchor_correlations": generation_details["anchor_correlations"],
+        "seed": clip["seed"],
+        "effective_seed": generation_details["effective_seed"],
+        "generation_attempt": generation_details["generation_attempt"],
+        "seed_attempt": generation_details["seed_attempt"],
+        "image_cond_noise_scale": generation_details["image_cond_noise_scale"],
+        "motion_validation": generation_details["motion_validation"],
+    }
+
+
+def generate_clip_sequence(
+    *,
+    base,
+    pipeline,
+    pipeline_config: dict[str, Any],
+    settings: dict[str, Any],
+    clips: list[dict[str, Any]],
+    prompt_data: dict[str, tuple[torch.Tensor, torch.Tensor]],
+    summary: dict[str, Any],
+    start_index: int,
+    total_count: int,
+) -> int:
+    for offset, clip in enumerate(clips, start=0):
+        print(
+            f"[{start_index + offset}/{total_count}] "
+            f"Generating {clip['output_name']}",
+            flush=True,
+        )
+        output, generation_details = generate_one(
+            base,
+            pipeline,
+            pipeline_config,
+            settings,
+            clip,
+            prompt_data[clip["id"]],
+            prompt_data["__negative__"],
+        )
+        report = clip_report(clip, output, generation_details)
+        atomic_json(OUTPUTS / f"{output.stem}.json", report)
+        summary["clips"].append(report)
+        atomic_json(OUTPUTS / "generation.json", summary)
+        release_cuda_memory()
+    return len(clips)
+
+
+def wait_for_stream_chunk(chunk_index: int) -> dict[str, Any]:
+    ready = CHUNKS_ROOT / f"chunk-{chunk_index:04d}.ready.json"
+    archive_path = CHUNKS_ROOT / f"chunk-{chunk_index:04d}.tar.gz"
+    last_notice_at = 0.0
+    while not ready.is_file() or not archive_path.is_file():
+        now_monotonic = time.monotonic()
+        if now_monotonic - last_notice_at >= 30:
+            print(
+                f"Waiting for streamed image chunk {chunk_index:04d}",
+                flush=True,
+            )
+            last_notice_at = now_monotonic
+        time.sleep(5)
+
+    shutil.rmtree(JOB_ROOT / "inputs", ignore_errors=True)
+    with tarfile.open(archive_path, "r:gz") as archive:
+        archive.extractall(JOB_ROOT, filter="data")
+    chunk = json.loads((JOB_ROOT / "chunk.json").read_text(encoding="utf-8"))
+    print(
+        f"Received streamed image chunk {chunk_index:04d} with "
+        f"{len(chunk['clip_ids'])} clip(s)",
+        flush=True,
+    )
+    ready.unlink(missing_ok=True)
+    archive_path.unlink(missing_ok=True)
+    return chunk
+
+
 def main() -> int:
     OUTPUTS.mkdir(parents=True, exist_ok=True)
     job = json.loads(JOB_PATH.read_text(encoding="utf-8"))
     settings = job["settings"]
+    streaming = bool(job.get("streaming"))
     summary: dict[str, Any] = {
         "started_at": now(),
         "status": "running",
         "model_load_count": 0,
+        "streaming": streaming,
         "clips": [],
     }
     atomic_json(OUTPUTS / "generation.json", summary)
@@ -711,44 +808,47 @@ def main() -> int:
         )
         base, pipeline, pipeline_config = load_pipeline(settings)
         summary["model_load_count"] = 1
-        for index, clip in enumerate(job["clips"], start=1):
-            print(
-                f"[{index}/{len(job['clips'])}] Generating {clip['output_name']}",
-                flush=True,
+        if streaming:
+            stream_batch_size = int(job["stream_batch_size"])
+            if stream_batch_size <= 0:
+                raise RuntimeError("stream_batch_size must be positive")
+            clips_by_id = {clip["id"]: clip for clip in job["clips"]}
+            total_chunks = (len(job["clips"]) + stream_batch_size - 1) // stream_batch_size
+            generated_count = 0
+            for chunk_index in range(total_chunks):
+                chunk = wait_for_stream_chunk(chunk_index)
+                chunk_clips = [clips_by_id[clip_id] for clip_id in chunk["clip_ids"]]
+                generated_count += generate_clip_sequence(
+                    base=base,
+                    pipeline=pipeline,
+                    pipeline_config=pipeline_config,
+                    settings=settings,
+                    clips=chunk_clips,
+                    prompt_data=prompt_data,
+                    summary=summary,
+                    start_index=generated_count + 1,
+                    total_count=len(job["clips"]),
+                )
+                atomic_json(
+                    OUTPUTS / f"chunk-{chunk_index:04d}.done.json",
+                    {
+                        "chunk_index": chunk_index,
+                        "completed_at": now(),
+                        "clip_ids": chunk["clip_ids"],
+                    },
+                )
+        else:
+            generate_clip_sequence(
+                base=base,
+                pipeline=pipeline,
+                pipeline_config=pipeline_config,
+                settings=settings,
+                clips=job["clips"],
+                prompt_data=prompt_data,
+                summary=summary,
+                start_index=1,
+                total_count=len(job["clips"]),
             )
-            output, generation_details = generate_one(
-                base,
-                pipeline,
-                pipeline_config,
-                settings,
-                clip,
-                prompt_data[clip["id"]],
-                prompt_data["__negative__"],
-            )
-            report = {
-                "id": clip["id"],
-                "completed_at": now(),
-                "output_name": output.name,
-                "bytes": output.stat().st_size,
-                "sha256": sha256(output),
-                "prompt_sha256": hashlib.sha256(
-                    clip["prompt"].encode("utf-8")
-                ).hexdigest(),
-                "generation_sha256": clip["generation_sha256"],
-                "anchor_correlations": generation_details["anchor_correlations"],
-                "seed": clip["seed"],
-                "effective_seed": generation_details["effective_seed"],
-                "generation_attempt": generation_details["generation_attempt"],
-                "seed_attempt": generation_details["seed_attempt"],
-                "image_cond_noise_scale": generation_details[
-                    "image_cond_noise_scale"
-                ],
-                "motion_validation": generation_details["motion_validation"],
-            }
-            atomic_json(OUTPUTS / f"{output.stem}.json", report)
-            summary["clips"].append(report)
-            atomic_json(OUTPUTS / "generation.json", summary)
-            release_cuda_memory()
         summary["status"] = "complete"
         summary["completed_at"] = now()
         atomic_json(OUTPUTS / "generation.json", summary)

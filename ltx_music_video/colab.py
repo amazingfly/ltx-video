@@ -18,6 +18,18 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 GENERATION_CONTRACT_VERSION = 3
 
 
+def sleep_with_heartbeat(seconds: int, *, message: str, interval: int = 60) -> None:
+    deadline = time.monotonic() + seconds
+    while True:
+        remaining = max(0, int(deadline - time.monotonic()))
+        if remaining == 0:
+            return
+        time.sleep(min(interval, remaining))
+        remaining = max(0, int(deadline - time.monotonic()))
+        if remaining:
+            print(f"{message}; {remaining}s remain", flush=True)
+
+
 def generation_sha256(settings: dict[str, Any]) -> str:
     payload = {
         "contract_version": GENERATION_CONTRACT_VERSION,
@@ -97,6 +109,13 @@ def generated_clip_is_valid(clip: dict[str, Any]) -> bool:
     )
 
 
+def env_flag(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
 def build_bundle(
     manifest: dict[str, Any],
     clips: list[dict[str, Any]],
@@ -105,12 +124,17 @@ def build_bundle(
     prompt_cache_key: str,
     prompt_cache_path: Path,
     seed_attempt_offset: int,
+    include_images: bool = True,
+    streaming: bool = False,
+    stream_batch_size: int = 0,
 ) -> Path:
     destination.parent.mkdir(parents=True, exist_ok=True)
     job = {
         "version": 1,
         "settings": manifest["settings"]["ltx"],
         "prompt_cache_key": prompt_cache_key,
+        "streaming": streaming,
+        "stream_batch_size": stream_batch_size,
         "clips": [],
     }
     with tarfile.open(destination, "w:gz") as archive:
@@ -123,10 +147,12 @@ def build_bundle(
         for clip in clips:
             source = Path(clip["image_path"])
             remote_name = f"inputs/{clip['id']}{source.suffix.lower()}"
-            archive.add(source, arcname=remote_name, recursive=False)
+            if include_images:
+                archive.add(source, arcname=remote_name, recursive=False)
             job["clips"].append(
                 {
                     "id": clip["id"],
+                    "local_image_path": str(source.resolve()),
                     "image_path": remote_name,
                     "prompt": clip["prompt"],
                     "seed": clip["seed"],
@@ -168,6 +194,7 @@ def generate_pending(
     infinite_allocation_retry = os.environ.get(
         "LTX_COLAB_INFINITE_ALLOCATION_RETRY", "1"
     ).strip().lower() not in {"0", "false", "no", "off"}
+    stream_batches = batch_size > 0 and env_flag("LTX_COLAB_STREAM_BATCHES", True)
     runtime_failures = 0
     allocation_failure_codes = {75}
     transient_runtime_codes = {75, 76}
@@ -211,11 +238,19 @@ def generate_pending(
             "so LTX weights are loaded once and reused until the runtime finishes "
             "or Colab expires it."
         )
+    elif stream_batches:
+        print(
+            f"Batch size is {batch_size}: streaming image chunks into one live "
+            "Colab runtime. The remote LTX worker loads model weights once, "
+            "then waits for the next image chunk after each chunk completes."
+        )
     else:
         print(
             f"Batch size is {batch_size}: this creates artificial model-reload "
             "boundaries after each completed batch. Use --batch-size 0 to keep "
-            "one loaded LTX worker processing all pending clips in a live runtime."
+            "one loaded LTX worker processing all pending clips in a live runtime, "
+            "or leave LTX_COLAB_STREAM_BATCHES enabled to stream chunks without "
+            "stopping the runtime."
         )
 
     attempt = 1
@@ -226,11 +261,23 @@ def generate_pending(
             return
 
         pending_by_id = {clip["id"]: clip for clip in pending}
-        attempt_clips = [
-            pending_by_id[clip["id"]]
-            for clip in active_batch
-            if clip["id"] in pending_by_id
-        ]
+        if stream_batches:
+            active_batch = pending
+            attempt_clips = list(active_batch)
+            prompt_cache_key = prompt_cache_sha256(
+                manifest["settings"]["ltx"], active_batch
+            )
+            prompt_cache_path = (
+                run_dir
+                / "jobs"
+                / f"prompt-embeddings-{prompt_cache_key[:16]}.pt"
+            )
+        else:
+            attempt_clips = [
+                pending_by_id[clip["id"]]
+                for clip in active_batch
+                if clip["id"] in pending_by_id
+            ]
         if not attempt_clips:
             active_batch = pending if batch_size == 0 else pending[:batch_size]
             attempt_clips = list(active_batch)
@@ -260,6 +307,9 @@ def generate_pending(
             prompt_cache_path=prompt_cache_path,
             seed_attempt_offset=(attempt - 1)
             * int(manifest["settings"]["ltx"].get("generation_attempts_per_clip", 4)),
+            include_images=not stream_batches,
+            streaming=stream_batches,
+            stream_batch_size=batch_size if stream_batches else 0,
         )
         env = {
             "COLAB_SESSION": f"{session}-a{attempt}",
@@ -269,6 +319,7 @@ def generate_pending(
             "LTX_LOCAL_OUTPUT_DIR": str(clips_dir.resolve()),
             "LTX_PROMPT_CACHE": str(prompt_cache_path.resolve()),
             "LTX_GENERATE_TIMEOUT": str(timeout_seconds),
+            "LTX_STREAM_BATCH_SIZE": str(batch_size if stream_batches else 0),
             "COLAB_OPEN_FRONTEND": "1" if open_frontend else "0",
         }
         completed = subprocess.run(
@@ -309,7 +360,10 @@ def generate_pending(
                     f"Waiting {long_retry_seconds} seconds before requesting "
                     "another Colab T4 runtime"
                 )
-                time.sleep(long_retry_seconds)
+                sleep_with_heartbeat(
+                    long_retry_seconds,
+                    message="Still waiting before requesting another Colab T4 runtime",
+                )
                 continue
             if runtime_failures > max_runtime_failures:
                 raise RuntimeError(

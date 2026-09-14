@@ -18,7 +18,9 @@ UPLOAD_CHUNK_BYTES="${COLAB_UPLOAD_CHUNK_BYTES:-33554432}"
 REMOTE_ROOT="/content/ltx_music_video"
 REMOTE_COLAB="${REMOTE_ROOT}/colab"
 REMOTE_JOB="${REMOTE_ROOT}/job"
+REMOTE_CHUNKS="${REMOTE_ROOT}/chunks"
 REMOTE_OUTPUT="/content/outputs"
+STREAM_BATCH_SIZE="${LTX_STREAM_BATCH_SIZE:-0}"
 
 mkdir -p "${LOCAL_OUTPUT_DIR}"
 mapfile -t OUTPUT_NAMES < <(
@@ -30,6 +32,27 @@ for clip in job["clips"]:
     print(clip["output_name"])
 PY
 )
+STREAMING="$(
+  python3 - "${BUNDLE}" "${STREAM_BATCH_SIZE}" <<'PY'
+import json, sys, tarfile
+with tarfile.open(sys.argv[1], "r:gz") as archive:
+    job = json.load(archive.extractfile("job.json"))
+batch_size = int(sys.argv[2])
+print("1" if job.get("streaming") and batch_size > 0 else "0")
+PY
+)"
+STREAM_CHUNK_COUNT="$(
+  python3 - "${BUNDLE}" "${STREAM_BATCH_SIZE}" <<'PY'
+import json, sys, tarfile
+with tarfile.open(sys.argv[1], "r:gz") as archive:
+    job = json.load(archive.extractfile("job.json"))
+batch_size = int(sys.argv[2])
+if not job.get("streaming") or batch_size <= 0:
+    print(0)
+else:
+    print((len(job["clips"]) + batch_size - 1) // batch_size)
+PY
+)"
 
 session_created=0
 guardian_pid=""
@@ -173,6 +196,69 @@ upload_bundle_with_retries() {
     | run_stdin_exec_with_retries 300s --timeout 240
 }
 
+create_stream_chunk_bundle() {
+  local chunk_index="$1"
+  local destination="$2"
+  python3 - "${BUNDLE}" "${STREAM_BATCH_SIZE}" "${chunk_index}" "${destination}" <<'PY'
+import json
+import sys
+import tarfile
+from pathlib import Path
+
+bundle = Path(sys.argv[1])
+batch_size = int(sys.argv[2])
+chunk_index = int(sys.argv[3])
+destination = Path(sys.argv[4])
+destination.parent.mkdir(parents=True, exist_ok=True)
+
+with tarfile.open(bundle, "r:gz") as archive:
+    job = json.load(archive.extractfile("job.json"))
+
+start = chunk_index * batch_size
+clips = job["clips"][start : start + batch_size]
+if not clips:
+    raise SystemExit(f"empty stream chunk {chunk_index}")
+
+chunk = {
+    "chunk_index": chunk_index,
+    "clip_ids": [clip["id"] for clip in clips],
+}
+chunk_json = destination.with_name(f"{destination.name}.json")
+chunk_json.write_text(json.dumps(chunk, indent=2) + "\n", encoding="utf-8")
+with tarfile.open(destination, "w:gz") as archive:
+    archive.add(chunk_json, arcname="chunk.json", recursive=False)
+    for clip in clips:
+        source = Path(clip["local_image_path"])
+        if not source.is_file():
+            raise FileNotFoundError(source)
+        archive.add(source, arcname=clip["image_path"], recursive=False)
+chunk_json.unlink(missing_ok=True)
+print(f"Created stream chunk {chunk_index:04d} with {len(clips)} clip(s)")
+PY
+}
+
+upload_stream_chunk() {
+  local chunk_index="$1"
+  local chunk_bundle ready_file remote_final remote_ready
+  chunk_bundle="$(mktemp "${LOCAL_OUTPUT_DIR}/stream-chunk-${chunk_index}.XXXXXX")"
+  ready_file="$(mktemp "${LOCAL_OUTPUT_DIR}/stream-chunk-${chunk_index}.ready.XXXXXX")"
+  create_stream_chunk_bundle "${chunk_index}" "${chunk_bundle}"
+  remote_final="${REMOTE_CHUNKS}/chunk-$(printf '%04d' "${chunk_index}").tar.gz"
+  remote_ready="${REMOTE_CHUNKS}/chunk-$(printf '%04d' "${chunk_index}").ready.json"
+  upload_with_retries "${chunk_bundle}" "${remote_final}" || {
+    rm -f "${chunk_bundle}" "${ready_file}"
+    return 1
+  }
+  rm -f "${chunk_bundle}"
+  printf '{"chunk_index": %s}\n' "${chunk_index}" >"${ready_file}"
+  upload_with_retries "${ready_file}" "${remote_ready}" || {
+    rm -f "${ready_file}"
+    return 1
+  }
+  rm -f "${ready_file}"
+  echo "Stream chunk ${chunk_index} is ready"
+}
+
 send_tunnel_keepalive() {
   [[ "${COLAB_TUNNEL_KEEPALIVE:-1}" == "1" ]] || return 0
   local now config_args=()
@@ -297,6 +383,31 @@ PY
   done
 }
 
+stream_next_upload=1
+stream_completed_until=-1
+sync_stream_chunks() {
+  [[ "${STREAMING}" == "1" ]] || return 0
+  while (( stream_next_upload < STREAM_CHUNK_COUNT )); do
+    local done_index marker temporary
+    done_index=$((stream_next_upload - 1))
+    if (( done_index > stream_completed_until )); then
+      marker="chunk-$(printf '%04d' "${done_index}").done.json"
+      temporary="${LOCAL_OUTPUT_DIR}/.${marker}.partial"
+      rm -f "${temporary}"
+      if ! timeout 60s colab download -s "${SESSION}" \
+        "${REMOTE_OUTPUT}/${marker}" "${temporary}" >/dev/null 2>&1; then
+        rm -f "${temporary}"
+        return 0
+      fi
+      mv "${temporary}" "${LOCAL_OUTPUT_DIR}/${marker}"
+      stream_completed_until="${done_index}"
+    fi
+    echo "Remote chunk ${done_index} completed; uploading stream chunk ${stream_next_upload}/${STREAM_CHUNK_COUNT}"
+    upload_stream_chunk "${stream_next_upload}"
+    stream_next_upload=$((stream_next_upload + 1))
+  done
+}
+
 download_prompt_cache() {
   local temporary report_temporary expected_bytes current_bytes
   temporary="${LOCAL_PROMPT_CACHE}.partial"
@@ -360,6 +471,7 @@ for attempt in 1 2 3; do
     "from pathlib import Path" \
     "Path('${REMOTE_COLAB}').mkdir(parents=True, exist_ok=True)" \
     "Path('${REMOTE_JOB}').mkdir(parents=True, exist_ok=True)" \
+    "Path('${REMOTE_CHUNKS}').mkdir(parents=True, exist_ok=True)" \
     "Path('${REMOTE_OUTPUT}').mkdir(parents=True, exist_ok=True)" \
     | run_stdin_exec_with_retries 75s --timeout 60; then
     runtime_ready=1
@@ -415,6 +527,18 @@ printf '%s\n' \
   "    for name in (clip['output_name'], Path(clip['output_name']).with_suffix('.json').name):" \
   "        (outputs / name).unlink(missing_ok=True)" \
   | run_stdin_exec_with_retries 90s --timeout 60
+
+if [[ "${STREAMING}" == "1" ]]; then
+  printf '%s\n' \
+    "import shutil" \
+    "from pathlib import Path" \
+    "chunks = Path('${REMOTE_CHUNKS}')" \
+    "shutil.rmtree(chunks, ignore_errors=True)" \
+    "chunks.mkdir(parents=True, exist_ok=True)" \
+    | run_stdin_exec_with_retries 90s --timeout 60
+  echo "Streaming ${STREAM_CHUNK_COUNT} image chunk(s) into one live Colab runtime"
+  upload_stream_chunk 0
+fi
 
 run_exec_with_retries 300s \
   -f "${ROOT}/colab/setup_colab.py" --timeout 270
@@ -500,6 +624,7 @@ while [[ -z "${generation_return_code}" ]]; do
   if [[ "${downloaded_any}" -eq 1 ]]; then
     last_progress_at="$(date +%s)"
   fi
+  sync_stream_chunks
 
   exit_temporary="${LOCAL_OUTPUT_DIR}/.generation_exit.json.partial"
   rm -f "${exit_temporary}"
