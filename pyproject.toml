@@ -21,7 +21,7 @@ antigravity-clipper = "antigravityPicker.cli:main"
 antigravity-clipper-v3 = "antigravityPicker.cliV3:main"
 
 [tool.setuptools.packages.find]
-include = ["ltx_music_video*", "antigravityPicker*"]
+include = ["ltx_music_video*", "antigravityPicker*", "media_workspace*"]
 
 [dependency-groups]
 dev = ["pytest>=8,<10"]

@@ -1,0 +1,15 @@
+{
+  "sha256": {
+    "__init__.py": "ca391715e5a505cb7c3fae1be975a74fa6e7e118b0c320dff8a5e126d256973c",
+    "cli.py": "b5824a8404502376ed409bcbd3470205ba9d025c16785ab43ea46bfabff64175",
+    "colab_artifact.py": "52342727755c5f732a42677f0f81392797865b5bd687a8e9a6f7236c00b684aa",
+    "colab_frontend.py": "c83dd8f8fb25bb3c1963d44d33f4fa773af01a36720ec9596052423c12400ab4",
+    "colab_token.py": "b38f3e43417cf638bc1fbb64c63af8252f2e0803cb251a8c802056fb1e0ad02d",
+    "colab_tunnel.py": "f34a72c9bbf86036d12dcfe9b82cbb96e2758417ae6ce5384ec54b89cf437615",
+    "config.py": "a7104732b825741793b8c993418df77d1ded4585ba5816c5d49a836438a9afd6",
+    "contracts.py": "b572c86e2e3eff3142d63e81ce67f421e05fe56245f0efcbd71fbd58e0737ab3",
+    "workflows.py": "c1b0f8c034c048d8fa60c109823fba2433bf5385cc550c680f8d2b111a740675"
+  },
+  "source": "https://github.com/amazingfly/media-pipeline/tree/main/media_workspace",
+  "version": "1.0.0"
+}

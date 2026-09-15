@@ -47,3 +47,9 @@ Cross-repository orchestration and publishing belong to `media-pipeline`.
 See [repository boundaries](docs/repositories.md). No generated media or model
 weights are committed. This project is an application checkout, not a standalone
 wheel containing the remote worker assets.
+
+See [workflow support status](docs/workflows.md). Use `python scripts/workspace.py doctor`
+to check centralized checkout/interpreter configuration, and
+`python scripts/workspace.py run --component ltx -- {python} SCRIPT [ARGS]`
+to launch with shared paths. Workspace setup is documented in
+[media-pipeline](https://github.com/amazingfly/media-pipeline/blob/main/docs/workspace.md).

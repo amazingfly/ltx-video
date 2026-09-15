@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "status_definition": "supported = maintained entry point with CPU checks; GPU access/deployment is not implied. experimental = specialized recipe. archived = preserved, not the default.",
+  "workflows": [
+    {
+      "id": "music-video",
+      "status": "supported",
+      "entrypoints": [
+        "ltx_music_video/cli.py",
+        "scripts/run_full_pipeline.py"
+      ],
+      "requirements": "Gemma, Colab, FFmpeg"
+    },
+    {
+      "id": "shorts-v3",
+      "status": "supported",
+      "entrypoints": [
+        "antigravityPicker/cliV3.py"
+      ],
+      "requirements": "Essentia, FFmpeg"
+    },
+    {
+      "id": "shorts-legacy",
+      "status": "archived",
+      "entrypoints": [
+        "antigravityPicker/cli.py",
+        "antigravityPicker/cliV2.py"
+      ],
+      "requirements": "Retained for historical selections"
+    }
+  ]
+}
